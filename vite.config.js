@@ -39,6 +39,9 @@ if (host === "localhost") {
 export default defineConfig({
   server: {
     allowedHosts: [host],
+    watch: {
+      usePolling: true, // auto save on watch mode
+    },
     cors: {
       preflightContinue: true,
     },

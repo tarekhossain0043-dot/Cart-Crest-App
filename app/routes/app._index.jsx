@@ -38,6 +38,10 @@ export const action = async ({ request }) => {
               jsonValue
             }
           }
+          userErrors {
+            field
+            message
+          }
         }
       }`,
     {
@@ -56,8 +60,24 @@ export const action = async ({ request }) => {
     },
   );
   const responseJson = await response.json();
-  const product = responseJson.data.productCreate.product;
-  const variantId = product.variants.edges[0].node.id;
+  if (responseJson.errors?.length) {
+    throw new Error(
+      responseJson.errors.map(({ message }) => message).join(", "),
+    );
+  }
+
+  const productCreate = responseJson.data?.productCreate;
+  if (productCreate?.userErrors?.length) {
+    throw new Error(
+      productCreate.userErrors.map(({ message }) => message).join(", "),
+    );
+  }
+
+  const product = productCreate?.product;
+  const variantId = product?.variants?.edges?.[0]?.node?.id;
+  if (!product || !variantId) {
+    throw new Error("Shopify did not return a product variant. Try again.");
+  }
   const variantResponse = await admin.graphql(
     `#graphql
     mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -67,6 +87,10 @@ export const action = async ({ request }) => {
           price
           barcode
           createdAt
+        }
+        userErrors {
+          field
+          message
         }
       }
     }`,
@@ -78,6 +102,17 @@ export const action = async ({ request }) => {
     },
   );
   const variantResponseJson = await variantResponse.json();
+  if (variantResponseJson.errors?.length) {
+    throw new Error(
+      variantResponseJson.errors.map(({ message }) => message).join(", "),
+    );
+  }
+  const variantUpdate = variantResponseJson.data?.productVariantsBulkUpdate;
+  if (variantUpdate?.userErrors?.length) {
+    throw new Error(
+      variantUpdate.userErrors.map(({ message }) => message).join(", "),
+    );
+  }
   const metaobjectResponse = await admin.graphql(
     `#graphql
     mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
@@ -108,11 +143,22 @@ export const action = async ({ request }) => {
     },
   );
   const metaobjectResponseJson = await metaobjectResponse.json();
+  if (metaobjectResponseJson.errors?.length) {
+    throw new Error(
+      metaobjectResponseJson.errors.map(({ message }) => message).join(", "),
+    );
+  }
+  const metaobjectUpsert = metaobjectResponseJson.data?.metaobjectUpsert;
+  if (metaobjectUpsert?.userErrors?.length) {
+    throw new Error(
+      metaobjectUpsert.userErrors.map(({ message }) => message).join(", "),
+    );
+  }
 
   return {
-    product: responseJson.data.productCreate.product,
-    variant: variantResponseJson.data.productVariantsBulkUpdate.productVariants,
-    metaobject: metaobjectResponseJson.data.metaobjectUpsert.metaobject,
+    product,
+    variant: variantUpdate?.productVariants,
+    metaobject: metaobjectUpsert?.metaobject,
   };
 };
 
@@ -124,6 +170,8 @@ export default function Index() {
 
   useEffect(() => {
     if (fetcher.data?.product?.id) shopify.toast.show("Test product created");
+    if (fetcher.data?.error)
+      shopify.toast.show(fetcher.data.error, { isError: true });
   }, [fetcher.data?.product?.id, shopify]);
 
   return (
@@ -145,15 +193,15 @@ export default function Index() {
               <h1 className="font-display text-4xl font-semibold tracking-tight text-[#18221d] sm:text-5xl">
                 Good morning, let&apos;s recover revenue.
               </h1>
-              <p className="mt-3 max-w-2xl text-base leading-7 text-[#64736b]">
-                A clear view of every cart that needs a gentle nudge, with the
-                next best action close at hand.
+              <p className="mt-3 max-w-xl text-base leading-7 text-[#64736b]">
+                A clear view of every cart that needs a gentle nudge
               </p>
             </div>
-            <div className="flex items-center gap-2 self-start rounded-full border border-[#dce5df] bg-white px-3 py-2 text-sm text-[#53645b] shadow-sm md:self-auto">
+            <div className="flex items-center justify-center max-w-[150px] w-full gap-2 self-center rounded-sm border border-[#dce5df] bg-white px-3 py-2 text-sm text-[#53645b] shadow-sm md:self-auto">
               <span className="h-2 w-2 rounded-full bg-[#37a566]" />
-              Live store data <span className="text-[#a1aca5]">/</span> 12:42 PM
+              <span className="text-sm">Live store data</span>
             </div>
+            {/* <span className="text-[#a1aca5]">/</span> 12:42 PM */}
           </header>
 
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
