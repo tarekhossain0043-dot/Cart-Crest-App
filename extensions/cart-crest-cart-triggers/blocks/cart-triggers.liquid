@@ -1,0 +1,186 @@
+{% assign cart_trigger_id = 'cart-crest-triggers-' | append: block.id %}
+<div
+  id="{{ cart_trigger_id }}"
+  class="cart-crest-triggers"
+  data-duration="{{ block.settings.timer_minutes | times: 60 }}"
+  data-cart-count="{{ cart.item_count }}"
+  {{ block.shopify_attributes }}
+>
+  {% if block.settings.enable_timer %}
+    <div class="cart-crest-timer" data-cart-crest-timer hidden>
+      <span class="cart-crest-timer__icon" aria-hidden="true">⏱</span>
+      <span>{{ block.settings.timer_label }}</span>
+      <strong data-cart-crest-time>00:00</strong>
+    </div>
+  {% endif %}
+
+  {% if block.settings.enable_promo %}
+    <div class="cart-crest-promo">
+      <span class="cart-crest-promo__text">{{ block.settings.promo_text }}</span>
+      {% if block.settings.promo_code != blank %}
+        <button class="cart-crest-promo__code" type="button" data-cart-crest-copy="{{ block.settings.promo_code | escape }}">
+          {{ block.settings.promo_code }}
+        </button>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<style>
+  #{{ cart_trigger_id }} {
+    --cart-crest-accent: {{ block.settings.accent_color }};
+    --cart-crest-text: {{ block.settings.text_color }};
+    --cart-crest-background: {{ block.settings.background_color }};
+    display: block;
+    margin: 0 0 12px;
+    font-family: inherit;
+  }
+
+  #{{ cart_trigger_id }}[hidden],
+  #{{ cart_trigger_id }} [hidden] {
+    display: none;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-timer,
+  #{{ cart_trigger_id }} .cart-crest-promo {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 11px 14px;
+    color: var(--cart-crest-text);
+    background: var(--cart-crest-background);
+    border: 1px solid color-mix(in srgb, var(--cart-crest-accent) 25%, transparent);
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-timer {
+    justify-content: space-between;
+    border-radius: 10px 10px 0 0;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-timer__icon {
+    color: var(--cart-crest-accent);
+    font-size: 16px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-timer strong {
+    margin-left: auto;
+    color: var(--cart-crest-accent);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .04em;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-promo {
+    border-radius: 10px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-timer + .cart-crest-promo {
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-promo__text {
+    flex: 1;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-promo__code {
+    flex: 0 0 auto;
+    padding: 5px 8px;
+    color: var(--cart-crest-accent);
+    background: transparent;
+    border: 1px dashed var(--cart-crest-accent);
+    border-radius: 5px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+  }
+</style>
+
+<script>
+  (() => {
+    const root = document.getElementById({{ cart_trigger_id | json }});
+    if (!root || root.dataset.initialized === 'true') return;
+    root.dataset.initialized = 'true';
+
+    const timer = root.querySelector('[data-cart-crest-timer]');
+    const time = root.querySelector('[data-cart-crest-time]');
+    const duration = Number(root.dataset.duration || 600);
+    const storageKey = 'cart-crest-reservation-{{ block.id }}';
+
+    const updateTimer = async () => {
+      if (!timer || !time) return;
+      let cartCount = Number(root.dataset.cartCount || 0);
+      try {
+        const cartResponse = await fetch('/cart.js');
+        if (cartResponse.ok) {
+          const cart = await cartResponse.json();
+          cartCount = Number(cart.item_count || 0);
+          root.dataset.cartCount = String(cartCount);
+        }
+      } catch {
+      }
+      if (!cartCount) {
+        timer.hidden = true;
+        return;
+      }
+
+      let endAt = Number(localStorage.getItem(storageKey));
+      if (!endAt || endAt <= Date.now()) {
+        endAt = Date.now() + duration * 1000;
+        localStorage.setItem(storageKey, String(endAt));
+      }
+
+      const remaining = Math.max(0, endAt - Date.now());
+      const minutes = Math.floor(remaining / 60000).toString().padStart(2, '0');
+      const seconds = Math.floor((remaining % 60000) / 1000).toString().padStart(2, '0');
+      time.textContent = `${minutes}:${seconds}`;
+      timer.hidden = false;
+
+      if (remaining > 0) window.setTimeout(updateTimer, 1000);
+      else localStorage.removeItem(storageKey);
+    };
+
+    updateTimer();
+
+    document.addEventListener('cart:refresh', updateTimer);
+    document.addEventListener('cart:updated', updateTimer);
+
+    root.querySelectorAll('[data-cart-crest-copy]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(button.dataset.cartCrestCopy);
+          const originalText = button.textContent;
+          button.textContent = 'Copied';
+          window.setTimeout(() => { button.textContent = originalText; }, 1400);
+        } catch {
+          button.textContent = 'Copy manually';
+        }
+      });
+    });
+  })();
+</script>
+
+{% schema %}
+{
+  "name": "Cart urgency triggers",
+  "target": "section",
+  "settings": [
+    { "type": "header", "content": "Cart countdown" },
+    { "type": "checkbox", "id": "enable_timer", "label": "Show cart countdown", "default": true },
+    { "type": "text", "id": "timer_label", "label": "Timer message", "default": "Your cart is reserved for" },
+    { "type": "range", "id": "timer_minutes", "label": "Reservation time (minutes)", "min": 1, "max": 60, "step": 1, "default": 10 },
+    { "type": "header", "content": "Announcement and promo" },
+    { "type": "checkbox", "id": "enable_promo", "label": "Show promo bar", "default": true },
+    { "type": "text", "id": "promo_text", "label": "Promo message", "default": "Complete your order today and enjoy free shipping." },
+    { "type": "text", "id": "promo_code", "label": "Coupon code", "default": "CART10" },
+    { "type": "header", "content": "Colors" },
+    { "type": "color", "id": "background_color", "label": "Background", "default": "#f0f8f2" },
+    { "type": "color", "id": "text_color", "label": "Text", "default": "#18221d" },
+    { "type": "color", "id": "accent_color", "label": "Accent", "default": "#2f8c59" }
+  ]
+}
+{% endschema %}

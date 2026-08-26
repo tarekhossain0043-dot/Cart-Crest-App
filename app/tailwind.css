@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-primary: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-secondary: "Unbounded", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {

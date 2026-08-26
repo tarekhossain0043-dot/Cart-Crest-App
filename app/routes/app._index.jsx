@@ -172,7 +172,7 @@ export default function Index() {
     if (fetcher.data?.product?.id) shopify.toast.show("Test product created");
     if (fetcher.data?.error)
       shopify.toast.show(fetcher.data.error, { isError: true });
-  }, [fetcher.data?.product?.id, shopify]);
+  }, [fetcher.data?.product?.id, fetcher.data?.error, shopify]);
 
   return (
     <s-page heading="Cart Crest">
