@@ -24,6 +24,46 @@
       {% endif %}
     </div>
   {% endif %}
+
+  {% assign cart_product_ids = cart.items | map: 'product_id' %}
+  {% assign recommendations = blank %}
+  {% assign recommendation_source = blank %}
+  {% for cart_item in cart.items %}
+    {% assign saved_recommendation = cart_item.product.metafields['$app']['cart_crest_recommendations'].value %}
+    {% if saved_recommendation != blank and saved_recommendation.products != blank %}
+      {% assign recommendation_source = saved_recommendation %}
+      {% break %}
+    {% endif %}
+  {% endfor %}
+
+  {% if recommendation_source != blank and recommendation_source.products != blank %}
+    <div class="cart-crest-upsell" data-cart-crest-upsell>
+      <div class="cart-crest-upsell__heading">
+        <span>{{ recommendation_source.headline | default: 'Complete your look' }}</span>
+        <small>{{ recommendation_source.products.size }} matches</small>
+      </div>
+      <div class="cart-crest-upsell__items">
+        {% for recommendation in recommendation_source.products %}
+          {% assign recommended_product = all_products[recommendation.handle] %}
+          {% unless cart_product_ids contains recommended_product.id %}
+            {% assign recommended_variant = recommended_product.selected_or_first_available_variant %}
+            {% if recommended_product != blank and recommended_variant.available %}
+              <article class="cart-crest-upsell__item" data-recommendation-id="{{ recommended_variant.id }}">
+                {% if recommended_product.featured_image %}
+                  <img src="{{ recommended_product.featured_image | image_url: width: 120 }}" alt="{{ recommended_product.title | escape }}" width="60" height="60" loading="lazy">
+                {% endif %}
+                <div class="cart-crest-upsell__info">
+                  <strong>{{ recommended_product.title }}</strong>
+                  <span>{{ recommended_variant.price | money }}</span>
+                </div>
+                <button type="button" class="cart-crest-upsell__add" data-cart-crest-add data-variant-id="{{ recommended_variant.id }}">Add</button>
+              </article>
+            {% endif %}
+          {% endunless %}
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
 </div>
 
 <style>
@@ -80,6 +120,80 @@
   #{{ cart_trigger_id }} .cart-crest-timer + .cart-crest-promo {
     border-top: 0;
     border-radius: 0 0 10px 10px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell {
+    margin-top: 10px;
+    padding: 14px;
+    color: var(--cart-crest-text);
+    background: var(--cart-crest-background);
+    border: 1px solid color-mix(in srgb, var(--cart-crest-accent) 25%, transparent);
+    border-radius: 10px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__heading,
+  #{{ cart_trigger_id }} .cart-crest-upsell__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__heading {
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__heading small,
+  #{{ cart_trigger_id }} .cart-crest-upsell__info span {
+    color: var(--cart-crest-accent);
+    font-size: 11px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__items {
+    display: grid;
+    gap: 8px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__item {
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--cart-crest-accent) 15%, transparent);
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__item img {
+    flex: 0 0 60px;
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 7px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__info {
+    display: grid;
+    flex: 1;
+    gap: 3px;
+    min-width: 0;
+    font-size: 12px;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__info strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #{{ cart_trigger_id }} .cart-crest-upsell__add {
+    flex: 0 0 auto;
+    padding: 7px 10px;
+    color: var(--cart-crest-background);
+    background: var(--cart-crest-accent);
+    border: 0;
+    border-radius: 5px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
   }
 
   #{{ cart_trigger_id }} .cart-crest-promo__text {
@@ -148,6 +262,31 @@
 
     document.addEventListener('cart:refresh', updateTimer);
     document.addEventListener('cart:updated', updateTimer);
+
+    root.querySelectorAll('[data-cart-crest-add]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const variantId = button.dataset.variantId;
+        if (!variantId || button.disabled) return;
+
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Adding...';
+        try {
+          const response = await fetch('/cart/add.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: [{ id: Number(variantId), quantity: 1 }] }),
+          });
+          if (!response.ok) throw new Error('Unable to add this item.');
+          document.dispatchEvent(new CustomEvent('cart:refresh'));
+          window.location.reload();
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = originalText;
+          button.title = error.message;
+        }
+      });
+    });
 
     root.querySelectorAll('[data-cart-crest-copy]').forEach((button) => {
       button.addEventListener('click', async () => {

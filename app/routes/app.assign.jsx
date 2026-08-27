@@ -56,6 +56,19 @@ export const action = async ({ request }) => {
   if (!cleanRecommendationIds.length)
     return { error: "Choose at least one different product to recommend." };
 
+  const recommendationProductsResponse = await admin.graphql(
+    `#graphql
+      query RecommendationProducts($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Product { id handle }
+        }
+      }`,
+    { variables: { ids: cleanRecommendationIds } },
+  );
+  const recommendationProductsJson =
+    await recommendationProductsResponse.json();
+  const recommendationProducts = recommendationProductsJson.data?.nodes ?? [];
+
   const responseJson = await (
     await admin.graphql(
       `#graphql
@@ -75,6 +88,10 @@ export const action = async ({ request }) => {
                 headline: headline || "You may also like",
                 discount: Math.max(0, Math.min(100, Number(discount) || 0)),
                 productIds: cleanRecommendationIds,
+                products: recommendationProducts.map(({ id, handle }) => ({
+                  id,
+                  handle,
+                })),
                 updatedAt: new Date().toISOString(),
               }),
             },

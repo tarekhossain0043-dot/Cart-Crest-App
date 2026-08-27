@@ -5,6 +5,11 @@ name = "CartCrest "
 application_url = "https://example.com"
 embedded = true
 
+[app_proxy]
+url = "https://example.com/apps/cart-crest"
+subpath = "cart-crest"
+prefix = "apps"
+
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "write_products,write_metaobjects,write_metaobject_definitions"
@@ -16,6 +21,23 @@ description = "Tracks products created by the Shopify app template for developme
 
   [product.metafields.app.demo_info.access]
   admin = "merchant_read_write"
+
+[product.metafields.app.product_activity]
+type = "single_line_text_field"
+name = "Product activity"
+description = "Short activity label shown for a product"
+
+  [product.metafields.app.product_activity.access]
+  admin = "merchant_read_write"
+
+[product.metafields.app.cart_crest_recommendations]
+type = "json"
+name = "Cart Crest recommendations"
+description = "Products to recommend when this product is in the cart"
+
+  [product.metafields.app.cart_crest_recommendations.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
 
 [metaobjects.app.example]
 name = "Example"

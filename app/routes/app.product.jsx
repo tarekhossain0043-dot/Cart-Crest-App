@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData, useLocation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 
@@ -15,15 +15,20 @@ export const loader = async ({ request }) => {
             title
             handle
             status
+            productType
+            vendor
             totalInventory
             featuredImage {
               url
               altText
             }
+            activity: metafield(namespace: "$app", key: "product_activity") { value }
             variants(first: 1) {
               nodes {
                 id
                 price
+                sku
+                inventoryItem { id sku }
               }
             }
           }
@@ -47,6 +52,189 @@ export const loader = async ({ request }) => {
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
   const formData = await request.formData();
+  const intent = String(formData.get("intent") || "delete");
+
+  if (intent === "edit") {
+    const productId = String(formData.get("productId") || "");
+    const title = String(formData.get("title") || "").trim();
+    const status = String(formData.get("status") || "ACTIVE");
+    const productType = String(formData.get("productType") || "").trim();
+    const vendor = String(formData.get("vendor") || "").trim();
+    const sku = String(formData.get("sku") || "").trim();
+    const imageUrl = String(formData.get("imageUrl") || "").trim();
+    const imageFile = formData.get("imageFile");
+    const activity = String(formData.get("activity") || "").trim();
+
+    if (!productId || !title)
+      return { error: "Product ID and name are required." };
+    if (!["ACTIVE", "DRAFT", "ARCHIVED"].includes(status)) {
+      return { error: "Choose a valid product status." };
+    }
+
+    const productResponse = await admin.graphql(
+      `#graphql
+        mutation UpdateProduct($product: ProductUpdateInput!) {
+          productUpdate(product: $product) {
+            product { id title status productType vendor }
+            userErrors { field message }
+          }
+        }`,
+      {
+        variables: {
+          product: {
+            id: productId,
+            title,
+            status,
+            productType,
+            vendor,
+            metafields: [
+              {
+                namespace: "$app",
+                key: "product_activity",
+                type: "single_line_text_field",
+                value: activity,
+              },
+            ],
+          },
+        },
+      },
+    );
+    const productResponseJson = await productResponse.json();
+    if (productResponseJson.errors?.length) {
+      return {
+        error: productResponseJson.errors
+          .map(({ message }) => message)
+          .join(", "),
+      };
+    }
+    const productUpdate = productResponseJson.data?.productUpdate;
+    if (productUpdate?.userErrors?.length) {
+      return {
+        error: productUpdate.userErrors
+          .map(({ message }) => message)
+          .join(", "),
+      };
+    }
+
+    const productData = productUpdate?.product;
+    const inventoryItemId = String(formData.get("inventoryItemId") || "");
+    if (inventoryItemId) {
+      const variantResponse = await admin.graphql(
+        `#graphql
+          mutation UpdateInventoryItem($input: InventoryItemUpdateInput!) {
+            inventoryItemUpdate(input: $input) {
+              inventoryItem { id sku }
+              userErrors { field message }
+            }
+          }`,
+        { variables: { input: { id: inventoryItemId, sku } } },
+      );
+      const variantResponseJson = await variantResponse.json();
+      if (variantResponseJson.errors?.length) {
+        return {
+          error: variantResponseJson.errors
+            .map(({ message }) => message)
+            .join(", "),
+        };
+      }
+      const variantErrors =
+        variantResponseJson.data?.inventoryItemUpdate?.userErrors ?? [];
+      if (variantErrors.length)
+        return {
+          error: variantErrors.map(({ message }) => message).join(", "),
+        };
+    }
+
+    let mediaSource = imageUrl;
+    if (imageFile instanceof File && imageFile.size > 0) {
+      const stagedResponse = await admin.graphql(
+        `#graphql
+          mutation StageProductImage($input: [StagedUploadInput!]!) {
+            stagedUploadsCreate(input: $input) {
+              stagedTargets { url resourceUrl parameters { name value } }
+              userErrors { field message }
+            }
+          }`,
+        {
+          variables: {
+            input: [
+              {
+                filename: imageFile.name,
+                mimeType: imageFile.type || "image/jpeg",
+                httpMethod: "POST",
+                resource: "PRODUCT_IMAGE",
+              },
+            ],
+          },
+        },
+      );
+      const stagedResponseJson = await stagedResponse.json();
+      if (stagedResponseJson.errors?.length) {
+        return {
+          error: stagedResponseJson.errors
+            .map(({ message }) => message)
+            .join(", "),
+        };
+      }
+      const stagedUpload = stagedResponseJson.data?.stagedUploadsCreate;
+      if (stagedUpload?.userErrors?.length) {
+        return {
+          error: stagedUpload.userErrors
+            .map(({ message }) => message)
+            .join(", "),
+        };
+      }
+      const stagedTarget = stagedUpload?.stagedTargets?.[0];
+      if (!stagedTarget)
+        return { error: "Shopify could not prepare the image upload." };
+
+      const uploadForm = new FormData();
+      stagedTarget.parameters.forEach(({ name, value }) => {
+        uploadForm.append(name, value);
+      });
+      uploadForm.append("file", imageFile);
+      const uploadResponse = await fetch(stagedTarget.url, {
+        method: "POST",
+        body: uploadForm,
+      });
+      if (!uploadResponse.ok)
+        return { error: "Image upload failed. Try another file." };
+      mediaSource = stagedTarget.resourceUrl;
+    }
+
+    if (mediaSource) {
+      const mediaResponse = await admin.graphql(
+        `#graphql
+          mutation AddProductImage($productId: ID!, $media: [CreateMediaInput!]!) {
+            productCreateMedia(productId: $productId, media: $media) {
+              media { alt }
+              mediaUserErrors { field message }
+            }
+          }`,
+        {
+          variables: {
+            productId,
+            media: [{ originalSource: mediaSource, mediaContentType: "IMAGE" }],
+          },
+        },
+      );
+      const mediaResponseJson = await mediaResponse.json();
+      if (mediaResponseJson.errors?.length) {
+        return {
+          error: mediaResponseJson.errors
+            .map(({ message }) => message)
+            .join(", "),
+        };
+      }
+      const mediaErrors =
+        mediaResponseJson.data?.productCreateMedia?.mediaUserErrors ?? [];
+      if (mediaErrors.length)
+        return { error: mediaErrors.map(({ message }) => message).join(", ") };
+    }
+
+    return { updatedProductId: productData?.id };
+  }
+
   const productId = String(formData.get("productId") || "");
 
   if (!productId) return { error: "Product ID is missing." };
@@ -87,13 +275,17 @@ const statusStyles = {
 
 export default function ProductPage() {
   const { products, shopDomain } = useLoaderData();
+  const location = useLocation();
   const deleteFetcher = useFetcher();
   const [search, setSearch] = useState("");
   const [addingVariantId, setAddingVariantId] = useState("");
   const [cartMessage, setCartMessage] = useState("");
   const [deleteMessage, setDeleteMessage] = useState("");
   const [productToDelete, setProductToDelete] = useState(null);
+  const [productToEdit, setProductToEdit] = useState(null);
+  const editFetcher = useFetcher();
   const isDeleting = deleteFetcher.state !== "idle";
+  const isEditing = editFetcher.state !== "idle";
   const filteredProducts = products.filter((product) =>
     `${product.title} ${product.handle}`
       .toLowerCase()
@@ -107,14 +299,17 @@ export default function ProductPage() {
     setAddingVariantId(variantId);
     setCartMessage("");
     try {
-      const response = await fetch(`https://${shopDomain}/cart/add.js`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          items: [{ id: Number(variantId), quantity: 1 }],
-        }),
-      });
+      const response = await fetch(
+        `https://${shopDomain}/apps/cart-crest/cart/add.js`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            items: [{ id: Number(variantId), quantity: 1 }],
+          }),
+        },
+      );
       if (!response.ok) throw new Error("Unable to add this product to cart.");
       await response.json();
       document.dispatchEvent(new CustomEvent("cart:refresh"));
@@ -135,6 +330,13 @@ export default function ProductPage() {
       setDeleteMessage(deleteFetcher.data.error);
     }
   }, [deleteFetcher.data]);
+
+  useEffect(() => {
+    if (editFetcher.data?.updatedProductId) {
+      setProductToEdit(null);
+      window.location.reload();
+    }
+  }, [editFetcher.data]);
 
   const deleteProduct = (product) => {
     const formData = new FormData();
@@ -196,12 +398,13 @@ export default function ProductPage() {
             </div>
           ) : (
             <div className="overflow-hidden rounded-2xl border border-[#dce5df] bg-white shadow-[0_8px_24px_rgba(32,54,42,0.04)]">
-              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(90px,0.8fr)_minmax(100px,0.8fr)_minmax(90px,0.7fr)_110px_90px] items-center gap-4 border-b border-[#edf1ee] bg-[#fbfcfb] px-6 py-4 text-xs font-bold uppercase tracking-[0.12em] text-[#87938c] md:grid">
+              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(90px,0.8fr)_minmax(100px,0.8fr)_minmax(90px,0.7fr)_110px_90px_75px] items-center gap-4 border-b border-[#edf1ee] bg-[#fbfcfb] px-6 py-4 text-xs font-bold uppercase tracking-[0.12em] text-[#87938c] md:grid">
                 <span>Product</span>
                 <span>Status</span>
                 <span>Inventory</span>
                 <span>Price</span>
                 <span>Add</span>
+                <span>Edit</span>
                 <span>Delete</span>
               </div>
               <div className="divide-y divide-[#edf1ee]">
@@ -212,12 +415,16 @@ export default function ProductPage() {
 
                   return (
                     <div
-                      className="grid gap-4 px-5 py-5 transition hover:bg-[#fbfdfb] md:grid-cols-[minmax(0,2fr)_minmax(90px,0.8fr)_minmax(100px,0.8fr)_minmax(90px,0.7fr)_110px_90px] md:items-center md:px-6"
+                      className="grid gap-4 px-5 py-5 transition hover:bg-[#fbfdfb] md:grid-cols-[minmax(0,2fr)_minmax(90px,0.8fr)_minmax(100px,0.8fr)_minmax(90px,0.7fr)_110px_90px_75px] md:items-center md:px-6"
                       key={product.id}
                     >
-                      <a
+                      <Link
                         className="flex min-w-0 items-center gap-3"
-                        href={`/app/product/${product.id.split("/").pop()}`}
+                        to={{
+                          pathname: "/app/single-product",
+                          search: location.search,
+                        }}
+                        state={{ product }}
                       >
                         {product.featuredImage?.url ? (
                           <img
@@ -238,7 +445,7 @@ export default function ProductPage() {
                             /{product.handle}
                           </p>
                         </div>
-                      </a>
+                      </Link>
                       <div className="flex items-center justify-between md:block">
                         <span className="text-xs font-semibold uppercase text-[#9aa69f] md:hidden">
                           Status
@@ -278,6 +485,14 @@ export default function ProductPage() {
                         {addingVariantId === variant?.id
                           ? "Adding..."
                           : "Add to cart"}
+                      </button>
+                      <button
+                        className="rounded-lg border border-[#abc9b4] px-3 py-2 text-center text-xs font-bold text-[#287044] transition hover:bg-[#f0f8f2] disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={isEditing}
+                        onClick={() => setProductToEdit(product)}
+                        type="button"
+                      >
+                        Edit
                       </button>
                       <button
                         className="rounded-lg border border-[#e4b7b1] px-3 py-2 text-center text-xs font-bold text-[#b34b3f] transition hover:bg-[#fff3f1] disabled:cursor-not-allowed disabled:opacity-60"
@@ -354,6 +569,143 @@ export default function ProductPage() {
               >
                 {isDeleting ? "Deleting..." : "Yes, delete product"}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {productToEdit ? (
+        <div
+          aria-labelledby="edit-product-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-[#18221d]/55 px-4 py-8"
+          role="dialog"
+        >
+          <div className="w-full max-h-[400px] h-full overflow-y-hidden max-w-2xl rounded-2xl border border-[#dce5df] bg-white p-6 shadow-2xl sm:p-7">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#3c8060]">
+              Catalog editor
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold" id="edit-product-title">
+              Edit product
+            </h2>
+            <div className="overflow-y-auto pt-2 h-[314px] scrollbar-none">
+              <div className="overflow-y-hidden pt-6 pb-6">
+                <editFetcher.Form
+                  className="grid gap-4 sm:grid-cols-2 overflow-y-scroll scrollbar-none"
+                  encType="multipart/form-data"
+                  method="post"
+                >
+                  <input name="intent" type="hidden" value="edit" />
+                  <input
+                    name="productId"
+                    type="hidden"
+                    value={productToEdit.id}
+                  />
+                  <input
+                    name="inventoryItemId"
+                    type="hidden"
+                    value={
+                      productToEdit.variants?.nodes?.[0]?.inventoryItem?.id ||
+                      ""
+                    }
+                  />
+                  <label className="text-sm font-semibold sm:col-span-2">
+                    Product name
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.title}
+                      name="title"
+                      required
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Status
+                    <select
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.status}
+                      name="status"
+                    >
+                      <option value="ACTIVE">Active</option>
+                      <option value="DRAFT">Draft</option>
+                      <option value="ARCHIVED">Archived</option>
+                    </select>
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Activity
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.activity?.value || ""}
+                      name="activity"
+                      placeholder="e.g. Featured this week"
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Product type
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.productType || ""}
+                      name="productType"
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Vendor
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.vendor || ""}
+                      name="vendor"
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    SKU
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={
+                        productToEdit.variants?.nodes?.[0]?.sku || ""
+                      }
+                      name="sku"
+                    />
+                  </label>
+                  <label className="text-sm font-semibold sm:col-span-2">
+                    Upload image file
+                    <input
+                      accept="image/*"
+                      className="mt-2 block w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-[#e8f1eb] file:px-3 file:py-2 file:font-semibold file:text-[#287044]"
+                      name="imageFile"
+                      type="file"
+                    />
+                  </label>
+                  <label className="text-sm font-semibold sm:col-span-2">
+                    Image URL
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.featuredImage?.url || ""}
+                      name="imageUrl"
+                      placeholder="https://..."
+                      type="url"
+                    />
+                  </label>
+                  {editFetcher.data?.error ? (
+                    <p className="text-sm font-semibold text-[#b34b3f] sm:col-span-2">
+                      {editFetcher.data.error}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-col-reverse gap-3 pt-3 sm:col-span-2 sm:flex-row sm:justify-end">
+                    <button
+                      className="rounded-xl border border-[#cbd8cf] px-4 py-3 text-sm font-bold text-[#53645b] hover:bg-[#f6f7f5]"
+                      onClick={() => setProductToEdit(null)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="rounded-xl bg-[#2f8c59] px-4 py-3 text-sm font-bold text-white hover:bg-[#246f46] disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isEditing}
+                      type="submit"
+                    >
+                      {isEditing ? "Saving..." : "Save changes"}
+                    </button>
+                  </div>
+                </editFetcher.Form>
+              </div>
             </div>
           </div>
         </div>
