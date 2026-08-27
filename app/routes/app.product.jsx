@@ -117,17 +117,22 @@ export const action = async ({ request }) => {
     }
 
     const productData = productUpdate?.product;
-    const inventoryItemId = String(formData.get("inventoryItemId") || "");
-    if (inventoryItemId) {
+    const variantId = String(formData.get("variantId") || "");
+    if (variantId) {
       const variantResponse = await admin.graphql(
         `#graphql
-          mutation UpdateInventoryItem($input: InventoryItemUpdateInput!) {
-            inventoryItemUpdate(input: $input) {
-              inventoryItem { id sku }
+          mutation UpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              productVariants { id inventoryItem { id sku } }
               userErrors { field message }
             }
           }`,
-        { variables: { input: { id: inventoryItemId, sku } } },
+        {
+          variables: {
+            productId,
+            variants: [{ id: variantId, inventoryItem: { sku } }],
+          },
+        },
       );
       const variantResponseJson = await variantResponse.json();
       if (variantResponseJson.errors?.length) {
@@ -138,7 +143,7 @@ export const action = async ({ request }) => {
         };
       }
       const variantErrors =
-        variantResponseJson.data?.inventoryItemUpdate?.userErrors ?? [];
+        variantResponseJson.data?.productVariantsBulkUpdate?.userErrors ?? [];
       if (variantErrors.length)
         return {
           error: variantErrors.map(({ message }) => message).join(", "),
@@ -272,6 +277,15 @@ const statusStyles = {
   DRAFT: "bg-[#fff1d9] text-[#8b5b16]",
   ARCHIVED: "bg-[#edf0ee] text-[#637169]",
 };
+const PRODUCTS_PER_PAGE = 5;
+
+const LoadingSpinner = () => (
+  <span
+    aria-label="Loading"
+    className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+    role="status"
+  />
+);
 
 export default function ProductPage() {
   const { products, shopDomain } = useLoaderData();
@@ -283,6 +297,7 @@ export default function ProductPage() {
   const [deleteMessage, setDeleteMessage] = useState("");
   const [productToDelete, setProductToDelete] = useState(null);
   const [productToEdit, setProductToEdit] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const editFetcher = useFetcher();
   const isDeleting = deleteFetcher.state !== "idle";
   const isEditing = editFetcher.state !== "idle";
@@ -290,6 +305,21 @@ export default function ProductPage() {
     `${product.title} ${product.handle}`
       .toLowerCase()
       .includes(search.toLowerCase()),
+  );
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredProducts.length / PRODUCTS_PER_PAGE),
+  );
+  const visibleProducts = filteredProducts.slice(
+    (currentPage - 1) * PRODUCTS_PER_PAGE,
+    currentPage * PRODUCTS_PER_PAGE,
+  );
+  const pageNumbers = Array.from(
+    { length: totalPages },
+    (_, index) => index + 1,
+  ).filter(
+    (page) =>
+      page === 1 || page === totalPages || Math.abs(page - currentPage) <= 1,
   );
 
   const addToCart = async (event, variantId) => {
@@ -337,6 +367,14 @@ export default function ProductPage() {
       window.location.reload();
     }
   }, [editFetcher.data]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const deleteProduct = (product) => {
     const formData = new FormData();
@@ -408,8 +446,10 @@ export default function ProductPage() {
                 <span>Delete</span>
               </div>
               <div className="divide-y divide-[#edf1ee]">
-                {filteredProducts.map((product) => {
+                {visibleProducts.map((product) => {
                   const variant = product.variants.nodes[0];
+                  const variantId = variant?.id?.split("/").pop();
+                  const isAdding = addingVariantId === variantId;
                   const statusClass =
                     statusStyles[product.status] ?? statusStyles.ARCHIVED;
 
@@ -472,19 +512,18 @@ export default function ProductPage() {
                       </div>
                       <button
                         className="rounded-lg bg-[#2f8c59] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#246f46] disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={
-                          !shopDomain ||
-                          !variant?.id ||
-                          addingVariantId === variant.id
-                        }
-                        onClick={(event) =>
-                          addToCart(event, variant?.id?.split("/").pop())
-                        }
+                        disabled={!shopDomain || !variant?.id || isAdding}
+                        onClick={(event) => addToCart(event, variantId)}
                         type="button"
                       >
-                        {addingVariantId === variant?.id
-                          ? "Adding..."
-                          : "Add to cart"}
+                        {isAdding ? (
+                          <span className="inline-flex items-center gap-2">
+                            <LoadingSpinner />
+                            Adding...
+                          </span>
+                        ) : (
+                          "Add to cart"
+                        )}
                       </button>
                       <button
                         className="rounded-lg border border-[#abc9b4] px-3 py-2 text-center text-xs font-bold text-[#287044] transition hover:bg-[#f0f8f2] disabled:cursor-not-allowed disabled:opacity-60"
@@ -492,10 +531,17 @@ export default function ProductPage() {
                         onClick={() => setProductToEdit(product)}
                         type="button"
                       >
-                        Edit
+                        {isEditing ? (
+                          <span className="inline-flex items-center gap-2">
+                            <LoadingSpinner />
+                            Edi...
+                          </span>
+                        ) : (
+                          "Edit"
+                        )}
                       </button>
                       <button
-                        className="rounded-lg border border-[#e4b7b1] px-3 py-2 text-center text-xs font-bold text-[#b34b3f] transition hover:bg-[#fff3f1] disabled:cursor-not-allowed disabled:opacity-60"
+                        className="rounded-lg overflow-hidden border border-[#e4b7b1] px-3 py-2 text-center text-xs font-bold text-[#b34b3f] transition hover:bg-[#fff3f1] disabled:cursor-not-allowed disabled:opacity-60"
                         disabled={isDeleting}
                         onClick={() => {
                           setDeleteMessage("");
@@ -503,12 +549,75 @@ export default function ProductPage() {
                         }}
                         type="button"
                       >
-                        {isDeleting ? "Deleting..." : "Delete"}
+                        {isDeleting ? (
+                          <span className="inline-flex items-center gap-2">
+                            <LoadingSpinner />
+                            Del...
+                          </span>
+                        ) : (
+                          "Delete"
+                        )}
                       </button>
                     </div>
                   );
                 })}
               </div>
+              <footer className="flex flex-col gap-4 border-t border-[#edf1ee] bg-[#fbfcfb] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs font-semibold text-[#718078]">
+                  Showing {(currentPage - 1) * PRODUCTS_PER_PAGE + 1}-
+                  {Math.min(
+                    currentPage * PRODUCTS_PER_PAGE,
+                    filteredProducts.length,
+                  )}{" "}
+                  of {filteredProducts.length}
+                </p>
+                <nav
+                  aria-label="Product pagination"
+                  className="flex items-center gap-1"
+                >
+                  <button
+                    aria-label="Previous page"
+                    className="rounded-lg border border-[#dce5df] px-3 py-2 text-xs font-bold text-[#53645b] transition hover:border-[#99b9a5] disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage((page) => page - 1)}
+                    type="button"
+                  >
+                    Previous
+                  </button>
+                  {pageNumbers.map((page, index) => {
+                    const previousPage = pageNumbers[index - 1];
+                    return (
+                      <span className="flex items-center gap-1" key={page}>
+                        {previousPage && page - previousPage > 1 ? (
+                          <span className="px-1 text-xs text-[#9aa69f]">
+                            ...
+                          </span>
+                        ) : null}
+                        <button
+                          aria-current={
+                            currentPage === page ? "page" : undefined
+                          }
+                          aria-label={`Go to page ${page}`}
+                          className={`h-8 min-w-8 rounded-lg px-2 text-xs font-bold transition ${currentPage === page ? "bg-[#2f8c59] text-white" : "border border-[#dce5df] bg-white text-[#53645b] hover:border-[#99b9a5]"}`}
+                          onClick={() => setCurrentPage(page)}
+                          type="button"
+                        >
+                          {page}
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <button
+                    aria-label="Next page"
+                    className="rounded-lg border border-[#dce5df] px-3 py-2 text-xs font-bold text-[#53645b] transition hover:border-[#99b9a5] disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={currentPage === totalPages}
+                    onClick={() => setCurrentPage((page) => page + 1)}
+                    type="button"
+                  >
+                    Next
+                  </button>
+                </nav>
+              </footer>
             </div>
           )}
           {cartMessage ? (
@@ -567,7 +676,14 @@ export default function ProductPage() {
                 onClick={() => deleteProduct(productToDelete)}
                 type="button"
               >
-                {isDeleting ? "Deleting..." : "Yes, delete product"}
+                {isDeleting ? (
+                  <span className="inline-flex items-center gap-2">
+                    <LoadingSpinner />
+                    Deleting...
+                  </span>
+                ) : (
+                  "Yes, delete product"
+                )}
               </button>
             </div>
           </div>
@@ -601,12 +717,9 @@ export default function ProductPage() {
                     value={productToEdit.id}
                   />
                   <input
-                    name="inventoryItemId"
+                    name="variantId"
                     type="hidden"
-                    value={
-                      productToEdit.variants?.nodes?.[0]?.inventoryItem?.id ||
-                      ""
-                    }
+                    value={productToEdit.variants?.nodes?.[0]?.id || ""}
                   />
                   <label className="text-sm font-semibold sm:col-span-2">
                     Product name
@@ -615,6 +728,14 @@ export default function ProductPage() {
                       defaultValue={productToEdit.title}
                       name="title"
                       required
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Product Price
+                    <input
+                      className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                      defaultValue={productToEdit.price || "0"}
+                      name="price"
                     />
                   </label>
                   <label className="text-sm font-semibold">
@@ -673,7 +794,7 @@ export default function ProductPage() {
                       type="file"
                     />
                   </label>
-                  <label className="text-sm font-semibold sm:col-span-2">
+                  {/* <label className="text-sm font-semibold sm:col-span-2">
                     Image URL
                     <input
                       className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
@@ -682,7 +803,7 @@ export default function ProductPage() {
                       placeholder="https://..."
                       type="url"
                     />
-                  </label>
+                  </label> */}
                   {editFetcher.data?.error ? (
                     <p className="text-sm font-semibold text-[#b34b3f] sm:col-span-2">
                       {editFetcher.data.error}
@@ -701,7 +822,14 @@ export default function ProductPage() {
                       disabled={isEditing}
                       type="submit"
                     >
-                      {isEditing ? "Saving..." : "Save changes"}
+                      {isEditing ? (
+                        <span className="inline-flex items-center gap-2">
+                          <LoadingSpinner />
+                          Saving...
+                        </span>
+                      ) : (
+                        "Save changes"
+                      )}
                     </button>
                   </div>
                 </editFetcher.Form>

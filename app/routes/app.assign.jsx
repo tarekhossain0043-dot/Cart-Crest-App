@@ -72,14 +72,14 @@ export const action = async ({ request }) => {
   const responseJson = await (
     await admin.graphql(
       `#graphql
-			mutation SaveRecommendations($productId: ID!, $metafields: [MetafieldsSetInput!]!) {
-				metafieldsSet(productId: $productId, metafields: $metafields) { metafields { id } userErrors { field message } }
+			mutation SaveRecommendations($metafields: [MetafieldsSetInput!]!) {
+				metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message } }
 			}`,
       {
         variables: {
-          productId: sourceProductId,
           metafields: [
             {
+              ownerId: sourceProductId,
               namespace: RECOMMENDATION_NAMESPACE,
               key: RECOMMENDATION_KEY,
               type: "json",

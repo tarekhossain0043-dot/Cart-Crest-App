@@ -1,20 +1,46 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
+import { useEffect, useState } from "react";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
-
-  return null;
+  const { admin } = await authenticate.admin(request);
+  const response = await admin.graphql(`#graphql
+    query DashboardProducts {
+      products(first: 100, sortKey: UPDATED_AT, reverse: true) {
+        nodes {
+          id title handle status updatedAt totalInventory
+          featuredImage { url altText }
+          variants(first: 1) { nodes { price } }
+        }
+      }
+    }`);
+  const responseJson = await response.json();
+  if (responseJson.errors?.length) {
+    throw new Error(
+      responseJson.errors.map(({ message }) => message).join(", "),
+    );
+  }
+  return { products: responseJson.data?.products?.nodes ?? [] };
 };
 
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
+  const formData = await request.formData();
+  const title = String(formData.get("title") || "").trim();
+  const status = String(formData.get("status") || "ACTIVE");
+  const productType = String(formData.get("productType") || "").trim();
+  const vendor = String(formData.get("vendor") || "").trim();
+  const price = String(formData.get("price") || "0").trim();
+  const sku = String(formData.get("sku") || "").trim();
+  const imageFile = formData.get("imageFile");
+
+  if (!title) return { error: "Product name is required." };
+  if (!["ACTIVE", "DRAFT", "ARCHIVED"].includes(status)) {
+    return { error: "Choose a valid product status." };
+  }
+
   const response = await admin.graphql(
     `#graphql
       mutation populateProduct($product: ProductCreateInput!) {
@@ -47,7 +73,10 @@ export const action = async ({ request }) => {
     {
       variables: {
         product: {
-          title: `${color} Snowboard`,
+          title,
+          status,
+          productType,
+          vendor,
           metafields: [
             {
               namespace: "$app",
@@ -97,7 +126,7 @@ export const action = async ({ request }) => {
     {
       variables: {
         productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
+        variants: [{ id: variantId, price, inventoryItem: { sku } }],
       },
     },
   );
@@ -112,6 +141,92 @@ export const action = async ({ request }) => {
     throw new Error(
       variantUpdate.userErrors.map(({ message }) => message).join(", "),
     );
+  }
+
+  if (imageFile instanceof File && imageFile.size > 0) {
+    const stagedResponse = await admin.graphql(
+      `#graphql
+      mutation StageProductImage($input: [StagedUploadInput!]!) {
+        stagedUploadsCreate(input: $input) {
+          stagedTargets { url resourceUrl parameters { name value } }
+          userErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          input: [
+            {
+              filename: imageFile.name,
+              mimeType: imageFile.type || "image/jpeg",
+              httpMethod: "POST",
+              resource: "PRODUCT_IMAGE",
+            },
+          ],
+        },
+      },
+    );
+    const stagedResponseJson = await stagedResponse.json();
+    if (stagedResponseJson.errors?.length) {
+      return {
+        error: stagedResponseJson.errors
+          .map(({ message }) => message)
+          .join(", "),
+      };
+    }
+    const stagedUpload = stagedResponseJson.data?.stagedUploadsCreate;
+    if (stagedUpload?.userErrors?.length) {
+      return {
+        error: stagedUpload.userErrors.map(({ message }) => message).join(", "),
+      };
+    }
+    const stagedTarget = stagedUpload?.stagedTargets?.[0];
+    if (!stagedTarget)
+      return { error: "Shopify could not prepare the image upload." };
+
+    const uploadForm = new FormData();
+    stagedTarget.parameters.forEach(({ name, value }) =>
+      uploadForm.append(name, value),
+    );
+    uploadForm.append("file", imageFile);
+    const uploadResponse = await fetch(stagedTarget.url, {
+      method: "POST",
+      body: uploadForm,
+    });
+    if (!uploadResponse.ok)
+      return { error: "Image upload failed. Try another file." };
+
+    const mediaResponse = await admin.graphql(
+      `#graphql
+      mutation AddProductImage($productId: ID!, $media: [CreateMediaInput!]!) {
+        productCreateMedia(productId: $productId, media: $media) {
+          media { alt }
+          mediaUserErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          productId: product.id,
+          media: [
+            {
+              originalSource: stagedTarget.resourceUrl,
+              mediaContentType: "IMAGE",
+            },
+          ],
+        },
+      },
+    );
+    const mediaResponseJson = await mediaResponse.json();
+    if (mediaResponseJson.errors?.length) {
+      return {
+        error: mediaResponseJson.errors
+          .map(({ message }) => message)
+          .join(", "),
+      };
+    }
+    const mediaErrors =
+      mediaResponseJson.data?.productCreateMedia?.mediaUserErrors ?? [];
+    if (mediaErrors.length)
+      return { error: mediaErrors.map(({ message }) => message).join(", ") };
   }
   const metaobjectResponse = await admin.graphql(
     `#graphql
@@ -163,13 +278,85 @@ export const action = async ({ request }) => {
 };
 
 export default function Index() {
+  const { products } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
+  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const isLoading = ["loading", "submitting"].includes(fetcher.state);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const openProductModal = () => setIsProductModalOpen(true);
+  const activeProducts = products.filter(
+    (product) => product.status === "ACTIVE",
+  );
+  const draftProducts = products.filter(
+    (product) => product.status === "DRAFT",
+  );
+  const inventory = products.reduce(
+    (total, product) => total + (product.totalInventory ?? 0),
+    0,
+  );
+  const prices = products
+    .map((product) => Number(product.variants?.nodes?.[0]?.price || 0))
+    .filter((price) => price > 0);
+  const catalogValue = prices.reduce((total, price) => total + price, 0);
+  const averagePrice = prices.length ? catalogValue / prices.length : 0;
+  const formatMoney = (value) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    }).format(value);
+  const chartDays = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - (6 - index));
+    return date;
+  });
+  const chartData = chartDays.map((date) => ({
+    label: date.toLocaleDateString("en-US", { weekday: "short" }),
+    count: products.filter((product) => {
+      const updated = new Date(product.updatedAt);
+      return updated.toDateString() === date.toDateString();
+    }).length,
+  }));
+  //   Show More Button Event
+  const [visible_item, setVisible_item] = useState(4);
+  const handle_show_more = () => {
+    visible_item;
+    setVisible_item(10);
+  };
+  const maxChartCount = Math.max(1, ...chartData.map(({ count }) => count));
+  const stats = [
+    [
+      formatMoney(catalogValue),
+      "Catalog value",
+      `${products.length} products`,
+      "text-[#2f8c59]",
+    ],
+    [
+      String(activeProducts.length),
+      "Active products",
+      `${draftProducts.length} drafts`,
+      "text-[#2f8c59]",
+    ],
+    [
+      String(inventory),
+      "Inventory units",
+      "Across your catalog",
+      "text-[#2f8c59]",
+    ],
+    [
+      formatMoney(averagePrice),
+      "Average price",
+      `${prices.length} priced items`,
+      "text-[#2f8c59]",
+    ],
+  ];
 
   useEffect(() => {
-    if (fetcher.data?.product?.id) shopify.toast.show("Test product created");
+    if (fetcher.data?.product?.id) {
+      shopify.toast.show("Product created successfully");
+      setIsProductModalOpen(false);
+    }
     if (fetcher.data?.error)
       shopify.toast.show(fetcher.data.error, { isError: true });
   }, [fetcher.data?.product?.id, fetcher.data?.error, shopify]);
@@ -178,7 +365,7 @@ export default function Index() {
     <s-page heading="Cart Crest">
       <s-button
         slot="primary-action"
-        onClick={generateProduct}
+        onClick={openProductModal}
         loading={isLoading}
       >
         Create test product
@@ -191,32 +378,26 @@ export default function Index() {
                 Store performance / Today
               </p>
               <h1 className="font-display text-4xl font-semibold tracking-tight text-[#18221d] sm:text-5xl">
-                Good morning, let&apos;s recover revenue.
+                Your catalog at a glance.
               </h1>
               <p className="mt-3 max-w-xl text-base leading-7 text-[#64736b]">
-                A clear view of every cart that needs a gentle nudge
+                Live product, pricing, and inventory data from your store.
               </p>
             </div>
             <div className="flex items-center justify-center max-w-[150px] w-full gap-2 self-center rounded-sm border border-[#dce5df] bg-white px-3 py-2 text-sm text-[#53645b] shadow-sm md:self-auto">
               <span className="h-2 w-2 rounded-full bg-[#37a566]" />
               <span className="text-sm">Live store data</span>
             </div>
-            {/* <span className="text-[#a1aca5]">/</span> 12:42 PM */}
           </header>
 
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {[
-              ["$4,860", "Recovered revenue", "+18.4%", "text-[#2f8c59]"],
-              ["126", "Carts recovered", "+12 today", "text-[#2f8c59]"],
-              ["8.7%", "Recovery rate", "+1.2 pts", "text-[#2f8c59]"],
-              ["$38.54", "Average cart value", "+4.6%", "text-[#2f8c59]"],
-            ].map(([value, label, change, color]) => (
+            {stats.map(([value, label, change, color]) => (
               <div
                 className="rounded-2xl border border-[#dce5df] bg-white p-5 shadow-[0_8px_24px_rgba(32,54,42,0.04)]"
                 key={label}
               >
                 <p className="text-sm text-[#718078]">{label}</p>
-                <div className="mt-3 flex items-end justify-between gap-2">
+                <div className="mt-3 flex flex-col items-end justify-between gap-2">
                   <strong className="text-3xl font-semibold tracking-tight">
                     {value}
                   </strong>
@@ -233,10 +414,10 @@ export default function Index() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-sm font-semibold text-[#18221d]">
-                    Recovery overview
+                    Product activity overview
                   </p>
                   <p className="mt-1 text-sm text-[#7a887f]">
-                    Recovered revenue over the last 7 days
+                    Products updated over the last 7 days
                   </p>
                 </div>
                 <button
@@ -247,17 +428,17 @@ export default function Index() {
                 </button>
               </div>
               <div className="mt-8 flex h-52 items-end gap-2 border-b border-[#e7ede9] pb-0 sm:gap-4">
-                {[42, 58, 48, 73, 65, 86, 100].map((height, index) => (
+                {chartData.map(({ label, count }, index) => (
                   <div
                     className="group flex h-full flex-1 flex-col justify-end gap-2"
                     key={index}
                   >
                     <div
                       className={`rounded-t-lg transition group-hover:bg-[#2f8c59] ${index === 6 ? "bg-[#e1a24a]" : "bg-[#c7e5d2]"}`}
-                      style={{ height: `${height}%` }}
+                      style={{ height: `${(count / maxChartCount) * 100}%` }}
                     />
                     <span className="text-center text-[11px] text-[#9aa69f]">
-                      {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][index]}
+                      {label}
                     </span>
                   </div>
                 ))}
@@ -265,11 +446,11 @@ export default function Index() {
               <div className="mt-5 flex items-center gap-5 text-xs text-[#718078]">
                 <span className="flex items-center gap-2">
                   <i className="h-2 w-2 rounded-full bg-[#e1a24a]" />
-                  Today
+                  Updated products
                 </span>
                 <span className="flex items-center gap-2">
                   <i className="h-2 w-2 rounded-full bg-[#c7e5d2]" />
-                  Previous days
+                  Last 7 days
                 </span>
               </div>
             </div>
@@ -279,15 +460,17 @@ export default function Index() {
               </p>
               <div className="mt-7 flex items-end justify-between">
                 <strong className="text-6xl font-semibold tracking-tight">
-                  34
+                  {draftProducts.length}
                 </strong>
                 <span className="mb-2 rounded-full bg-[#315b46] px-3 py-1 text-xs text-[#d8eddf]">
-                  +6 this hour
+                  {draftProducts.length === 1
+                    ? "1 draft"
+                    : `${draftProducts.length} drafts`}
                 </span>
               </div>
               <p className="mt-4 text-sm leading-6 text-[#b8d9c4]">
-                High-intent carts are waiting. Your next campaign could bring
-                them back.
+                Draft products are waiting for review before they go live in
+                your catalog.
               </p>
               <button
                 className="mt-8 w-full rounded-xl bg-[#e1a24a] px-4 py-3 text-sm font-bold text-[#193a2a] transition hover:bg-[#edb564]"
@@ -311,58 +494,64 @@ export default function Index() {
                 </div>
                 <a
                   className="text-sm font-semibold text-[#2f8c59]"
-                  href="/app/additional"
+                  href="#product-form"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    // openProductModal();
+                    handle_show_more();
+                  }}
                 >
                   View all
                 </a>
               </div>
               <div className="mt-6 divide-y divide-[#edf1ee]">
-                {[
-                  [
-                    "JM",
-                    "Jordan M.",
-                    "Recovered cart",
-                    "$128.00",
-                    "2 min ago",
+                {products.slice(0, visible_item).map((product, index) => {
+                  const productPrice = Number(
+                    product.variants?.nodes?.[0]?.price || 0,
+                  );
+                  const updatedAt = new Date(product.updatedAt);
+                  const time = Number.isNaN(updatedAt.getTime())
+                    ? "Recently"
+                    : updatedAt.toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      });
+                  const avatarColors = [
                     "bg-[#f8ddc9]",
-                  ],
-                  [
-                    "AK",
-                    "Ava K.",
-                    "Email reminder",
-                    "$76.50",
-                    "18 min ago",
                     "bg-[#d6e6f2]",
-                  ],
-                  [
-                    "RL",
-                    "Riley L.",
-                    "Recovered cart",
-                    "$214.20",
-                    "42 min ago",
                     "bg-[#e5dbf1]",
-                  ],
-                ].map(([initials, name, event, amount, time, avatar]) => (
-                  <div
-                    className="flex items-center gap-3 py-4 first:pt-0 last:pb-0"
-                    key={name}
-                  >
-                    <span
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-[#53645b] ${avatar}`}
+                  ];
+                  const initials = product.title
+                    .split(" ")
+                    .slice(0, 2)
+                    .map((word) => word[0])
+                    .join("")
+                    .toUpperCase();
+                  return (
+                    <div
+                      className="flex items-center gap-3 py-4 first:pt-0 last:pb-0"
+                      key={product.id}
                     >
-                      {initials}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">{name}</p>
-                      <p className="text-xs text-[#87938c]">
-                        {event} <span className="mx-1">/</span> {time}
-                      </p>
+                      <span
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-[#53645b] ${avatarColors[index]}`}
+                      >
+                        {initials}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold">
+                          {product.title}
+                        </p>
+                        <p className="text-xs text-[#87938c]">
+                          {product.status} product{" "}
+                          <span className="mx-1">/</span> {time}
+                        </p>
+                      </div>
+                      <strong className="text-sm font-semibold text-[#2f8c59]">
+                        {productPrice ? formatMoney(productPrice) : "No price"}
+                      </strong>
                     </div>
-                    <strong className="text-sm font-semibold text-[#2f8c59]">
-                      +{amount}
-                    </strong>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
             <div className="rounded-2xl border border-[#dce5df] bg-[#fffdf8] p-6 shadow-[0_8px_24px_rgba(32,54,42,0.04)]">
@@ -371,16 +560,17 @@ export default function Index() {
                 Keep your recovery engine moving.
               </p>
               <div className="mt-5 grid gap-2">
-                <a
-                  className="flex items-center justify-between rounded-xl border border-[#e8e3d8] bg-white px-4 py-3 text-sm font-semibold transition hover:border-[#e1a24a]"
-                  href="/app/additional"
+                <button
+                  className="flex w-full items-center justify-between rounded-xl border border-[#e8e3d8] bg-white px-4 py-3 text-left text-sm font-semibold transition hover:border-[#e1a24a]"
+                  onClick={openProductModal}
+                  type="button"
                 >
                   Create recovery flow{" "}
                   <span className="text-[#e1a24a]">-&gt;</span>
-                </a>
+                </button>
                 <button
                   className="flex items-center justify-between rounded-xl border border-[#e8e3d8] bg-white px-4 py-3 text-left text-sm font-semibold transition hover:border-[#e1a24a]"
-                  onClick={generateProduct}
+                  onClick={openProductModal}
                   type="button"
                 >
                   Create test product{" "}
@@ -396,6 +586,135 @@ export default function Index() {
           </section>
         </div>
       </div>
+      {isProductModalOpen ? (
+        <div
+          aria-labelledby="create-product-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto scrollbar-none bg-[#18221d]/55 px-4 py-8"
+          role="dialog"
+        >
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto scrollbar-none rounded-2xl border border-[#dce5df] bg-white p-6 shadow-2xl sm:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#3c8060]">
+                  Product setup
+                </p>
+                <h2
+                  className="mt-2 text-2xl font-semibold"
+                  id="create-product-title"
+                >
+                  Create product and recovery flow
+                </h2>
+                <p className="mt-2 text-sm text-[#718078]">
+                  Add the product details and image that should power this flow.
+                </p>
+              </div>
+              <button
+                aria-label="Close product form"
+                className="leading-none text-[#718078] hover:text-[#18221d]"
+                onClick={() => setIsProductModalOpen(false)}
+                type="button"
+              >
+                <span className="flex items-center justify-center w-10 h-10 rounded-full bg-green-50 cursor-pointer transition-all duration-500 ease-in-out hover:bg-green-300 text-2xl font-medium text-black leading-8">
+                  &times;
+                </span>
+              </button>
+            </div>
+            <fetcher.Form
+              className="mt-6 grid gap-4 sm:grid-cols-2"
+              encType="multipart/form-data"
+              method="post"
+            >
+              <label className="text-sm font-semibold sm:col-span-2">
+                Product name
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  name="title"
+                  placeholder="e.g. Summer essentials"
+                  required
+                />
+              </label>
+              <label className="text-sm font-semibold">
+                Price
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  defaultValue="100.00"
+                  min="0"
+                  name="price"
+                  step="0.01"
+                  type="number"
+                />
+              </label>
+              <label className="text-sm font-semibold">
+                Status
+                <select
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  defaultValue="ACTIVE"
+                  name="status"
+                >
+                  <option value="ACTIVE">Active</option>
+                  <option value="DRAFT">Draft</option>
+                  <option value="ARCHIVED">Archived</option>
+                </select>
+              </label>
+              <label className="text-sm font-semibold">
+                Product type
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  name="productType"
+                  placeholder="e.g. Accessories"
+                />
+              </label>
+              <label className="text-sm font-semibold">
+                Vendor
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  name="vendor"
+                  placeholder="Brand or supplier"
+                />
+              </label>
+              <label className="text-sm font-semibold">
+                SKU
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  name="sku"
+                  placeholder="Optional SKU"
+                />
+              </label>
+              <label className="text-sm font-semibold sm:col-span-2">
+                Product image
+                <input
+                  accept="image/*"
+                  className="mt-2 block w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-[#e8f1eb] file:px-3 file:py-2 file:font-semibold file:text-[#287044]"
+                  name="imageFile"
+                  type="file"
+                />
+              </label>
+              {fetcher.data?.error ? (
+                <p className="text-sm font-semibold text-[#b34b3f] sm:col-span-2">
+                  {fetcher.data.error}
+                </p>
+              ) : null}
+              <div className="flex flex-col-reverse gap-3 pt-3 sm:col-span-2 sm:flex-row sm:justify-end">
+                <button
+                  className="rounded-xl border border-[#cbd8cf] px-4 py-3 text-sm font-bold text-[#53645b] hover:bg-[#f6f7f5]"
+                  onClick={() => setIsProductModalOpen(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-[#2f8c59] px-4 py-3 text-sm font-bold text-white hover:bg-[#246f46] disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isLoading}
+                  type="submit"
+                >
+                  {isLoading ? "Creating..." : "Create product"}
+                </button>
+              </div>
+            </fetcher.Form>
+          </div>
+        </div>
+      ) : null}
     </s-page>
   );
 }

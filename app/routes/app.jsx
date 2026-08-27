@@ -1,4 +1,9 @@
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import {
+  Outlet,
+  useLoaderData,
+  useNavigation,
+  useRouteError,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
@@ -12,6 +17,8 @@ export const loader = async ({ request }) => {
 
 export default function App() {
   const { apiKey } = useLoaderData();
+  const navigation = useNavigation();
+  const isNavigating = navigation.state === "loading";
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -22,6 +29,16 @@ export default function App() {
         <s-link href="/app/assign">Assign</s-link>
       </s-app-nav>
       <Outlet />
+      {isNavigating ? (
+        <div
+          aria-label="Loading page"
+          aria-live="polite"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-[#f6f7f5]/70 backdrop-blur-[2px]"
+          role="status"
+        >
+          <span className="h-10 w-10 animate-spin rounded-full border-4 border-[#c7e5d2] border-t-[#2f8c59]" />
+        </div>
+      ) : null}
     </AppProvider>
   );
 }
