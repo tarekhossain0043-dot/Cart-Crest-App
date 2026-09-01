@@ -326,20 +326,20 @@ export default function ProductPage() {
     event.preventDefault();
     if (!shopDomain || !variantId) return;
 
+    const normalizedVariantId = Number(String(variantId).split("/").pop());
+    if (!Number.isFinite(normalizedVariantId)) return;
+
     setAddingVariantId(variantId);
     setCartMessage("");
     try {
-      const response = await fetch(
-        `https://${shopDomain}/apps/cart-crest/cart/add.js`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            items: [{ id: Number(variantId), quantity: 1 }],
-          }),
-        },
-      );
+      const response = await fetch("/apps/cart-crest/cart/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          items: [{ id: normalizedVariantId, quantity: 1 }],
+        }),
+      });
       if (!response.ok) throw new Error("Unable to add this product to cart.");
       await response.json();
       document.dispatchEvent(new CustomEvent("cart:refresh"));

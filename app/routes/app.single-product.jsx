@@ -97,20 +97,25 @@ export default function ProductDetailPage() {
 
   const addToCart = async () => {
     const variantId = variant?.id?.split("/").pop();
-    if (!shopDomain || !variantId || isAdding) return;
+    const normalizedVariantId = Number(variantId);
+    if (
+      !shopDomain ||
+      !variantId ||
+      !Number.isFinite(normalizedVariantId) ||
+      isAdding
+    ) {
+      return;
+    }
     setIsAdding(true);
     try {
-      const response = await fetch(
-        `https://${shopDomain}/apps/cart-crest/cart/add.js`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            items: [{ id: Number(variantId), quantity: 1 }],
-          }),
-        },
-      );
+      const response = await fetch("/apps/cart-crest/cart/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          items: [{ id: normalizedVariantId, quantity: 1 }],
+        }),
+      });
       if (!response.ok) throw new Error("Unable to add this product to cart.");
       await response.json();
       document.dispatchEvent(new CustomEvent("cart:refresh"));

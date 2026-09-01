@@ -41,6 +41,21 @@ export const action = async ({ request }) => {
     return { error: "Choose a valid product status." };
   }
 
+  const productInput = {
+    title,
+    status,
+    ...(productType ? { productType } : {}),
+    ...(vendor ? { vendor } : {}),
+    metafields: [
+      {
+        namespace: "$app",
+        key: "demo_info",
+        type: "single_line_text_field",
+        value: "Created by React Router Template",
+      },
+    ],
+  };
+
   const response = await admin.graphql(
     `#graphql
       mutation populateProduct($product: ProductCreateInput!) {
@@ -72,19 +87,7 @@ export const action = async ({ request }) => {
       }`,
     {
       variables: {
-        product: {
-          title,
-          status,
-          productType,
-          vendor,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
+        product: productInput,
       },
     },
   );
@@ -107,6 +110,12 @@ export const action = async ({ request }) => {
   if (!product || !variantId) {
     throw new Error("Shopify did not return a product variant. Try again.");
   }
+  const variantInput = {
+    id: variantId,
+    price,
+    ...(sku ? { inventoryItem: { sku } } : {}),
+  };
+
   const variantResponse = await admin.graphql(
     `#graphql
     mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -126,7 +135,7 @@ export const action = async ({ request }) => {
     {
       variables: {
         productId: product.id,
-        variants: [{ id: variantId, price, inventoryItem: { sku } }],
+        variants: [variantInput],
       },
     },
   );
@@ -228,52 +237,9 @@ export const action = async ({ request }) => {
     if (mediaErrors.length)
       return { error: mediaErrors.map(({ message }) => message).join(", ") };
   }
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
-      metaobjectUpsert(handle: $handle, values: $values) {
-        metaobject {
-          id
-          handle
-          values
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        values: {
-          title: "Demo Entry",
-          description:
-            "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-        },
-      },
-    },
-  );
-  const metaobjectResponseJson = await metaobjectResponse.json();
-  if (metaobjectResponseJson.errors?.length) {
-    throw new Error(
-      metaobjectResponseJson.errors.map(({ message }) => message).join(", "),
-    );
-  }
-  const metaobjectUpsert = metaobjectResponseJson.data?.metaobjectUpsert;
-  if (metaobjectUpsert?.userErrors?.length) {
-    throw new Error(
-      metaobjectUpsert.userErrors.map(({ message }) => message).join(", "),
-    );
-  }
-
   return {
     product,
     variant: variantUpdate?.productVariants,
-    metaobject: metaobjectUpsert?.metaobject,
   };
 };
 
@@ -282,8 +248,25 @@ export default function Index() {
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
+  const [recoveryForm, setRecoveryForm] = useState({
+    flowName: "Abandoned Cart Recovery",
+    trigger: "Customer abandons cart",
+    delay: "1 hour",
+    action: "Email",
+    discount: "No discount",
+    active: true,
+  });
   const isLoading = ["loading", "submitting"].includes(fetcher.state);
   const openProductModal = () => setIsProductModalOpen(true);
+  const openRecoveryFlow = () => setIsRecoveryModalOpen(true);
+  const closeRecoveryFlow = () => setIsRecoveryModalOpen(false);
+  const saveRecoveryFlow = () => {
+    shopify.toast.show(
+      `${recoveryForm.flowName || "Recovery flow"} saved and ${recoveryForm.active ? "activated" : "saved"}.`,
+    );
+    closeRecoveryFlow();
+  };
   const activeProducts = products.filter(
     (product) => product.status === "ACTIVE",
   );
@@ -562,7 +545,7 @@ export default function Index() {
               <div className="mt-5 grid gap-2">
                 <button
                   className="flex w-full items-center justify-between rounded-xl border border-[#e8e3d8] bg-white px-4 py-3 text-left text-sm font-semibold transition hover:border-[#e1a24a]"
-                  onClick={openProductModal}
+                  onClick={openRecoveryFlow}
                   type="button"
                 >
                   Create recovery flow{" "}
@@ -712,6 +695,195 @@ export default function Index() {
                 </button>
               </div>
             </fetcher.Form>
+          </div>
+        </div>
+      ) : null}
+
+      {isRecoveryModalOpen ? (
+        <div
+          aria-labelledby="create-recovery-flow-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-[#18221d]/55 px-4 py-8"
+          role="dialog"
+        >
+          <div className="w-full max-w-xl rounded-2xl border border-[#dce5df] bg-white p-6 shadow-2xl sm:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#3c8060]">
+                  Recovery flow setup
+                </p>
+                <h2
+                  className="mt-2 text-2xl font-semibold text-[#18221d]"
+                  id="create-recovery-flow-title"
+                >
+                  Create Recovery Flow
+                </h2>
+              </div>
+              <button
+                aria-label="Close recovery flow form"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[#edf3ee] text-2xl text-[#53645b] hover:bg-[#e1eadf]"
+                onClick={closeRecoveryFlow}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-4">
+              <label className="text-sm font-semibold text-[#18221d]">
+                Flow Name
+                <input
+                  className="mt-2 w-full rounded-xl border border-[#cbd8cf] px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                  onChange={(event) =>
+                    setRecoveryForm((current) => ({
+                      ...current,
+                      flowName: event.target.value,
+                    }))
+                  }
+                  value={recoveryForm.flowName}
+                />
+              </label>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="text-sm font-semibold text-[#18221d]">
+                  Trigger
+                  <select
+                    className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                    onChange={(event) =>
+                      setRecoveryForm((current) => ({
+                        ...current,
+                        trigger: event.target.value,
+                      }))
+                    }
+                    value={recoveryForm.trigger}
+                  >
+                    <option value="Customer abandons cart">
+                      Customer abandons cart
+                    </option>
+                    <option value="Customer adds to cart but doesn't buy">
+                      Customer adds to cart but does not buy
+                    </option>
+                  </select>
+                </label>
+
+                <label className="text-sm font-semibold text-[#18221d]">
+                  Delay
+                  <select
+                    className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                    onChange={(event) =>
+                      setRecoveryForm((current) => ({
+                        ...current,
+                        delay: event.target.value,
+                      }))
+                    }
+                    value={recoveryForm.delay}
+                  >
+                    <option value="1 hour">1 hour</option>
+                    <option value="6 hours">6 hours</option>
+                    <option value="24 hours">24 hours</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="text-sm font-semibold text-[#18221d]">
+                  Recovery Action
+                  <select
+                    className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                    onChange={(event) =>
+                      setRecoveryForm((current) => ({
+                        ...current,
+                        action: event.target.value,
+                      }))
+                    }
+                    value={recoveryForm.action}
+                  >
+                    <option value="Email">Email</option>
+                    <option value="Discount code">Discount code</option>
+                    <option value="Recovery link">Recovery link</option>
+                  </select>
+                </label>
+
+                <label className="text-sm font-semibold text-[#18221d]">
+                  Discount
+                  <select
+                    className="mt-2 w-full rounded-xl border border-[#cbd8cf] bg-white px-3 py-3 font-normal outline-none focus:border-[#3c8060]"
+                    onChange={(event) =>
+                      setRecoveryForm((current) => ({
+                        ...current,
+                        discount: event.target.value,
+                      }))
+                    }
+                    value={recoveryForm.discount}
+                  >
+                    <option value="No discount">No discount</option>
+                    <option value="5%">5%</option>
+                    <option value="10%">10%</option>
+                    <option value="Custom">Custom</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-[#e7ede9] bg-[#f6f7f5] p-4 text-sm text-[#53645b]">
+                <p className="font-semibold text-[#18221d]">Flow preview</p>
+                <div className="mt-3 space-y-2">
+                  <p>
+                    <span className="font-medium text-[#18221d]">Name:</span>{" "}
+                    {recoveryForm.flowName || "Abandoned Cart Recovery"}
+                  </p>
+                  <p>
+                    <span className="font-medium text-[#18221d]">Trigger:</span>{" "}
+                    {recoveryForm.trigger}
+                  </p>
+                  <p>
+                    <span className="font-medium text-[#18221d]">Wait:</span>{" "}
+                    {recoveryForm.delay}
+                  </p>
+                  <p>
+                    <span className="font-medium text-[#18221d]">Action:</span>{" "}
+                    {recoveryForm.action}
+                  </p>
+                  <p>
+                    <span className="font-medium text-[#18221d]">
+                      Discount:
+                    </span>{" "}
+                    {recoveryForm.discount}
+                  </p>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-3 text-sm font-medium text-[#18221d]">
+                <input
+                  checked={recoveryForm.active}
+                  className="h-4 w-4 rounded border-[#cbd8cf] text-[#2f8c59] focus:ring-[#2f8c59]"
+                  onChange={(event) =>
+                    setRecoveryForm((current) => ({
+                      ...current,
+                      active: event.target.checked,
+                    }))
+                  }
+                  type="checkbox"
+                />
+                Activate Flow
+              </label>
+
+              <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
+                <button
+                  className="rounded-xl border border-[#cbd8cf] px-4 py-3 text-sm font-bold text-[#53645b] hover:bg-[#f6f7f5]"
+                  onClick={closeRecoveryFlow}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-[#2f8c59] px-4 py-3 text-sm font-bold text-white hover:bg-[#246f46]"
+                  onClick={saveRecoveryFlow}
+                  type="button"
+                >
+                  Save & Activate
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

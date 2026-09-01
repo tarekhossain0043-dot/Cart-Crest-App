@@ -18,9 +18,9 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>A short heading about Cart Crest</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          A tagline about cart-crest that describes your value proposition.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
