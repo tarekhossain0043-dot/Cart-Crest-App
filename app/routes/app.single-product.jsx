@@ -108,12 +108,15 @@ export default function ProductDetailPage() {
     }
     setIsAdding(true);
     try {
-      const response = await fetch("/apps/cart-crest/cart/add", {
+      const response = await fetch("/app/cart/add", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          items: [{ id: normalizedVariantId, quantity: 1 }],
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: new URLSearchParams({
+          id: String(normalizedVariantId),
+          quantity: "1",
         }),
       });
       if (!response.ok) throw new Error("Unable to add this product to cart.");
@@ -214,7 +217,7 @@ export default function ProductDetailPage() {
               )}
               <button
                 className="mt-6 w-full rounded-xl bg-[#193a2a] px-4 py-3 text-sm font-bold text-white transition hover:bg-[#2f6048] disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={isAdding || !variant?.id}
+                disabled
                 onClick={addToCart}
                 type="button"
               >

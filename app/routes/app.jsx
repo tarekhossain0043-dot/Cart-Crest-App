@@ -47,7 +47,7 @@ function CartDrawer({ isOpen, onClose, shopDomain, onCartDataChange }) {
 
     try {
       setLoading(true);
-      const response = await fetch("/apps/cart-crest/cart/cart", {
+      const response = await fetch("/app/cart/cart", {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Unable to load cart");
@@ -67,13 +67,13 @@ function CartDrawer({ isOpen, onClose, shopDomain, onCartDataChange }) {
     if (!shopDomain) return;
 
     try {
-      const response = await fetch("/apps/cart-crest/cart/change", {
+      const response = await fetch("/app/cart/change", {
         method: "POST",
         credentials: "include",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
         },
-        body: JSON.stringify({
+        body: new URLSearchParams({
           line: String(line),
           quantity: String(quantity),
         }),

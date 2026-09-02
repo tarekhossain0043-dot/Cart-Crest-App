@@ -332,12 +332,15 @@ export default function ProductPage() {
     setAddingVariantId(variantId);
     setCartMessage("");
     try {
-      const response = await fetch("/apps/cart-crest/cart/add", {
+      const response = await fetch("/app/cart/add", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          items: [{ id: normalizedVariantId, quantity: 1 }],
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: new URLSearchParams({
+          id: String(normalizedVariantId),
+          quantity: "1",
         }),
       });
       if (!response.ok) throw new Error("Unable to add this product to cart.");
@@ -512,7 +515,7 @@ export default function ProductPage() {
                       </div>
                       <button
                         className="rounded-lg bg-[#2f8c59] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#246f46] disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={!shopDomain || !variant?.id || isAdding}
+                        disabled
                         onClick={(event) => addToCart(event, variantId)}
                         type="button"
                       >

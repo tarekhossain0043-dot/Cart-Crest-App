@@ -1,16 +1,16 @@
 client_id = "c7534aec6f012382bf458a9466604aea"
 name = "Cart-crest"
-application_url = "https://example.com"
+application_url = "https://survive-cinema-slides-autos.trycloudflare.com"
 embedded = true
 
 [access_scopes]
 scopes = "write_metaobject_definitions,write_metaobjects,write_products,write_app_proxy"
 
 [auth]
-redirect_urls = ["https://example.com/api/auth"]
+redirect_urls = ["https://survive-cinema-slides-autos.trycloudflare.com/api/auth"]
 
 [app_proxy]
-url = "/apps/cart-crest"
+url = "https://survive-cinema-slides-autos.trycloudflare.com"
 prefix = "apps"
 subpath = "cart-crest"
 

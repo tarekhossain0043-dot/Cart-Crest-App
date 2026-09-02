@@ -3,7 +3,7 @@ import { authenticate } from "../shopify.server";
 export const action = async ({ request }) => {
   const { session } = await authenticate.public.appProxy(request);
 
-  if (!session) {
+  if (!session?.shop) {
     return Response.json(
       { error: "This shop is not authenticated with the app." },
       { status: 401 },
@@ -53,6 +53,12 @@ export const action = async ({ request }) => {
     headers: {
       "Content-Type":
         response.headers.get("Content-Type") || "application/json",
+      ...(request.headers.get("Origin")
+        ? {
+            "Access-Control-Allow-Origin": request.headers.get("Origin"),
+            "Access-Control-Allow-Credentials": "true",
+          }
+        : {}),
     },
   });
 };

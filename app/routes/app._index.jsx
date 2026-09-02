@@ -348,6 +348,7 @@ export default function Index() {
     <s-page heading="Cart Crest">
       <s-button
         slot="primary-action"
+        variant="primary"
         onClick={openProductModal}
         loading={isLoading}
       >

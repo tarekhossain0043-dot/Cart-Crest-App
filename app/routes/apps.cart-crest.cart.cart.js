@@ -4,7 +4,7 @@ export const loader = async ({ request }) => {
   try {
     const { session } = await authenticate.public.appProxy(request);
 
-    if (!session) {
+    if (!session?.shop) {
       return Response.json(
         { error: "This shop is not authenticated with the app." },
         { status: 401 },
@@ -22,9 +22,9 @@ export const loader = async ({ request }) => {
     console.log("Status:", response.status);
     console.log("Status Text:", response.statusText);
     console.log("Response URL:", response.url);
-    const text = await response.text();
+    const body = await response.text();
 
-    console.log("Response Body:", text);
+    console.log("Response Body:", body);
 
     if (!response.ok) {
       console.error(`[Cart.js] Shopify returned ${response.status}`);
@@ -34,12 +34,16 @@ export const loader = async ({ request }) => {
       );
     }
 
-    const body = await response.text();
-
     return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": "application/json",
+        ...(request.headers.get("Origin")
+          ? {
+              "Access-Control-Allow-Origin": request.headers.get("Origin"),
+              "Access-Control-Allow-Credentials": "true",
+            }
+          : {}),
       },
     });
   } catch (error) {

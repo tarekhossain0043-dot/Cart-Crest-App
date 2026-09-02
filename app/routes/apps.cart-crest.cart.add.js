@@ -7,15 +7,22 @@ export async function action({ request }) {
 
   const { session } = await authenticate.public.appProxy(request);
 
-  if (!session) {
+  if (!session?.shop) {
+    console.error("[AddToCart] Missing appProxy session shop", {
+      url: request.url,
+      host: request.headers.get("host"),
+    });
     return Response.json({ error: "Not authenticated" }, { status: 401 });
   }
+
+  console.log("[AddToCart] appProxy session shop:", session.shop);
 
   try {
     let body = await request.text();
     const contentType = request.headers.get("Content-Type") || "";
     const headers = {
       Accept: "application/json",
+      "Content-Type": contentType || "application/x-www-form-urlencoded",
       ...(request.headers.get("Cookie")
         ? { Cookie: request.headers.get("Cookie") }
         : {}),
@@ -37,6 +44,8 @@ export async function action({ request }) {
             "quantity",
             String(item?.quantity ?? parsed?.quantity ?? 1),
           );
+          params.set("form_type", "product");
+          params.set("utf8", "✓");
           body = params.toString();
           headers["Content-Type"] =
             "application/x-www-form-urlencoded; charset=UTF-8";
@@ -49,19 +58,41 @@ export async function action({ request }) {
       }
     }
 
-    const response = await fetch(`https://${session.shop}/add.js`, {
+    if (!body || !body.includes("id=")) {
+      return Response.json(
+        { error: "Missing product variant id for add-to-cart request." },
+        { status: 400 },
+      );
+    }
+
+    console.log("[AddToCart] forwarding to Shopify cart add:", {
+      shop: session.shop,
+      method: "POST",
+      contentType: headers["Content-Type"],
+      body,
+    });
+
+    const response = await fetch(`https://${session.shop}/cart/add.js`, {
       method: "POST",
       headers,
       body,
     });
 
     const data = await response.text();
+    console.log("[AddToCart] Shopify response status:", response.status);
+    console.log("[AddToCart] Shopify response body:", data);
 
     return new Response(data, {
       status: response.status,
       headers: {
         "Content-Type":
           response.headers.get("Content-Type") || "application/json",
+        ...(request.headers.get("Origin")
+          ? {
+              "Access-Control-Allow-Origin": request.headers.get("Origin"),
+              "Access-Control-Allow-Credentials": "true",
+            }
+          : {}),
       },
     });
   } catch (error) {
